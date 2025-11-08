@@ -11,7 +11,11 @@ public class CalcClient {
         Socket socket = null;
         Scanner scanner = new Scanner(System.in);
         try {
-            socket = new Socket("localhost", 9999);
+            ConfigReader.ServerEndpoint ep = ConfigReader.loadServerEndpoint();
+
+            socket = new Socket();
+            socket.connect(new InetSocketAddress(ep.host, ep.port), 5000);
+
             in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
             out = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
             while (true) {
