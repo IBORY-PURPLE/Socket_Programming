@@ -2,76 +2,151 @@ package org.example;
 import java.io.*;
 import java.net.*;
 import java.util.*;
+import java.util.concurrent.*;
 
 
 public class CalcServer {
-    public static String calc(String exp) {
-        StringTokenizer st = new StringTokenizer(exp, " ");
-        if (st.countTokens() != 3)
-            return "error";
-        String res = "";
-        String opcode = st.nextToken();
-        int op1 = Integer.parseInt(st.nextToken());
-        int op2 = Integer.parseInt(st.nextToken());
-        switch (opcode) {
-            case "ADD":
-                res = Integer.toString(op1 + op2);
-                break;
-            case "SUB":
-                res = Integer.toString(op1 - op2);
-                break;
-            case "MUL":
-                res = Integer.toString(op1 * op2);
-                break;
-            case "DIV":
-                res = Integer.toString(op1 / op2);
-                break;
-            default:
-                res = "error";
-        }
-        return res;
-    }
+    private static final int PORT = 9999;
+
+    private static final int POOL_SIZE = Math.max(4, Runtime.getRuntime().availableProcessors() * 2);
+
+    private static final int SOCKET_TIMEOUT_MS = 60_000;
 
     public static void main(String[] args) {
-        BufferedReader in = null;
-        BufferedWriter out = null;
-        ServerSocket listener = null;
-        Socket socket = null;
+        ExecutorService pool = new ThreadPoolExecutor(
+                POOL_SIZE,
+                POOL_SIZE,
+                60L, TimeUnit.SECONDS,
+                new LinkedBlockingQueue<>(),
+                new ThreadFactory() {
+                    private final ThreadFactory df = Executors.defaultThreadFactory();
+                    @Override public Thread newThread(Runnable r) {
+                        Thread t = df.newThread(r);
+                        t.setName("client-handler-" + t.getId());
+                        return t;
+                    }
+                },
+                new ThreadPoolExecutor.AbortPolicy()
+        );
 
-        try {
-            listener = new ServerSocket(9999);
-            System.out.println("연결을 기다리고 있습니다....");
-            socket = listener.accept();
-            System.out.println("연결되었습니다.");
-            in = new BufferedReader(
-                    new InputStreamReader(socket.getInputStream())
-            );
-            out = new BufferedWriter(
-                    new OutputStreamWriter(socket.getOutputStream())
-            );
-            while (true) {
-                String inputMessage = in.readLine();
-                if (inputMessage.equalsIgnoreCase("bye")) {
-                    System.out.println("클라이언트에서 연결을 종료하였음");
-                    break;
+        try (ServerSocket server = new ServerSocket()) {
+            server.setReuseAddress(true);
+            server.bind(new InetSocketAddress(PORT));
+            System.out.println("[SERVER] started on port " + PORT + " (pool=" + POOL_SIZE + ")");
+
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                System.out.println("\n[SERVER] shutdown requested. closing pool...");
+                pool.shutdown();
+                try {
+                    if (!pool.awaitTermination(5, TimeUnit.SECONDS)) {
+                        System.out.println("[SERVER] forcing pool shutdownNow()");
+                        pool.shutdownNow();
+                    }
+                } catch (InterruptedException ignored) {
+                    pool.shutdownNow();
                 }
-                System.out.println(inputMessage);
+                System.out.println("[SERVER] bye");
+            }));
 
-                String res = calc(inputMessage);
-                out.write(res + "\n");
-                out.flush();
+            while (true) {
+                try {
+                    Socket client = server.accept();
+                    client.setSoTimeout(SOCKET_TIMEOUT_MS);
+                    System.out.println("[ACCEPT] " + client.getRemoteSocketAddress());
+                    pool.submit(new ClientHandler(client)); // Runnable 제출
+                } catch (RejectedExecutionException ex) {
+                    System.err.println("[WARN] pool rejected client: " + ex.getMessage());
+                }
             }
         } catch (IOException e) {
-                System.out.println(e.getMessage());
-        } finally{
-            try {
-                if (socket != null)
-                    socket.close();
-                if (listener != null)
-                    listener.close();
-            } catch (IOException e) {
-                System.out.println("클라이언트와 채팅 중 오류가 발생했습니다.");
-            }
+            System.err.println("[FATAL] server error: " + e);
         }
     }
+
+    static class ClientHandler implements Runnable {
+        private final Socket socket;
+
+        ClientHandler(Socket socket) {
+            this.socket = socket;
+        }
+
+        @Override
+        public void run() {
+            try (socket;
+                BufferedReader in = new BufferedReader(
+                        new InputStreamReader(socket.getInputStream()));
+                BufferedWriter out = new BufferedWriter(
+                        new OutputStreamWriter(socket.getOutputStream()))
+            ) {
+                out.write("OK READY\n"); out.flush();
+
+                String line;
+                while ((line = in.readLine()) != null) {
+                    line = line.trim();
+                    if (line.isEmpty()) continue;
+                    if ("QUIT".equalsIgnoreCase(line)) {
+                        out.write("OK BYE\n"); out.flush();
+                        break;
+                    }
+
+                    try {
+                        String response = handleCalc(line);
+                        out.write("OK " + response + "\n");
+                    } catch (IllegalArgumentException ex) {
+                        out.write("ERR " + errorCodeOf(ex) + " " + ex.getMessage() + "\n");
+                    } catch (Exception ex) {
+                        out.write("ERR E_INTERNAL internal_error\n");
+                    }
+                    out.flush();
+                }
+            } catch (SocketTimeoutException ste) {
+                System.err.println("[TIMEOUT] " + socket.getRemoteSocketAddress());
+            } catch (IOException ioe) {
+                System.err.println("[IOERR] " + socket.getRemoteSocketAddress() + " : " + ioe.getMessage());
+            }
+        }
+
+        private String handleCalc(String req) {
+            String[] tok = req.split("\\s+");
+            if (tok.length < 3) throw new IllegalArgumentException("bad_request");
+
+            String op = tok[0].toUpperCase(Locale.ROOT);
+            if (tok.length != 3) throw new IllegalArgumentException("too_many_or_few_args");
+
+            double a = parseNumber(tok[1]);
+            double b = parseNumber(tok[2]);
+
+            return switch (op) {
+                case "ADD" -> String.valueOf(a + b);
+                case "SUB" -> String.valueOf(a - b);
+                case "MUL" -> String.valueOf(a * b);
+                case "DIV" -> {
+                    if (b == 0.0) throw new IllegalArgumentException("divided_by_zero");
+                    yield String.valueOf(a / b);
+                }
+                default -> throw new IllegalArgumentException("unknown_op");
+            };
+        }
+
+        private static double parseNumber(String s) {
+            try {
+                return Double.parseDouble(s);
+            } catch (NumberFormatException nfe) {
+                throw new IllegalArgumentException("nan");
+            }
+        }
+
+        private static String errorCodeOf(IllegalArgumentException ex) {
+            return switch (ex.getMessage()) {
+                case "divided_by_zero" -> "0으로 나눌 수 없습니다.";
+                case "unknown_op" -> "알수없는 연산자입니다.";
+                case "too_many_or_few_args" -> "인자가 너무 많습니다.";
+                case "nan" -> "숫자가 아닌 값을 입력했습니다.";
+                case "bad_request" -> "잘못된 요청입니다.";
+                default -> "잘못된 요청입니다.";
+            };
+        }
+
+    }
 }
+

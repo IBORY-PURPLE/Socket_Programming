@@ -8,6 +8,9 @@ import java.util.*;
 public final class ConfigReader {
     private ConfigReader() {}
 
+    private static final String DEFAULT_HOST = "localhost";
+    private static final int DEFAULT_PORT = 9999;
+
     public static ServerEndpoint loadServerEndpoint() throws IOException {
 
         InputStream in = ConfigReader.class.getResourceAsStream("/org/server_info.dat");
@@ -17,11 +20,14 @@ public final class ConfigReader {
         }
 
         Path path = Paths.get("org", "server_info.dat");
-        if (!Files.exists(path)) {
-            throw new IOException("설정 파일을 classpath 또는 파일시스템에서 찾을 수 없음.");
+        if (Files.exists(path)) {
+            System.out.println("파일시스템에서 설정 로드: "+ path.toAbsolutePath());
+            return parseLines(Files.readAllLines(path, StandardCharsets.UTF_8));
         }
-        System.out.println("파일시스템에서 설정 로드: " + path.toAbsolutePath());
-        return parseLines(Files.readAllLines(path, StandardCharsets.UTF_8));
+
+        System.out.printf("설정 파일을 찾을 수 없음. 기본값 사용 -> %s:%d%n", DEFAULT_HOST, DEFAULT_PORT);
+        return new ServerEndpoint(DEFAULT_HOST, DEFAULT_PORT);
+
     }
 
     private static ServerEndpoint parseLines(List<String> rawLines) throws IOException {
