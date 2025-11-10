@@ -5,9 +5,11 @@ import java.nio.file.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 
+// resources/org/server_info.dat에서 server 주소와 port번호 읽어오는 class
 public final class ConfigReader {
     private ConfigReader() {}
 
+    // ip주소와 port 기본값 설정
     private static final String DEFAULT_HOST = "localhost";
     private static final int DEFAULT_PORT = 9999;
 

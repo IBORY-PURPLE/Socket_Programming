@@ -4,15 +4,17 @@ import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
 
-
+// 계산기 서버
 public class CalcServer {
     private static final int PORT = 9999;
 
     private static final int POOL_SIZE = Math.max(4, Runtime.getRuntime().availableProcessors() * 2);
 
+    // 60초 동안 클라이언트가 아무런 입력을 하지 않을 경우 소켓을 닫는 시간 설정
     private static final int SOCKET_TIMEOUT_MS = 60_000;
 
     public static void main(String[] args) {
+        // ThreadPool로 여러 thread를 받을 수 있게 해줌.
         ExecutorService pool = new ThreadPoolExecutor(
                 POOL_SIZE,
                 POOL_SIZE,
@@ -63,6 +65,7 @@ public class CalcServer {
         }
     }
 
+    // Runnable로 다중 클라이언트 접속 가능하게 하기.
     static class ClientHandler implements Runnable {
         private final Socket socket;
 
@@ -78,6 +81,7 @@ public class CalcServer {
                 BufferedWriter out = new BufferedWriter(
                         new OutputStreamWriter(socket.getOutputStream()))
             ) {
+                // 처음 클라이언트가 접속했을 때 OK READY로 접속이 되었다는 것을 클라이언트 단에서 인지하게 해주기.
                 out.write("OK READY\n"); out.flush();
 
                 String line;
@@ -90,6 +94,8 @@ public class CalcServer {
                     }
 
                     try {
+                        // response값을 status와 함께 결과값 보내기
+                        // OK <result> OR ERR <errorcode> <errorMessage>
                         String response = handleCalc(line);
                         out.write("OK " + response + "\n");
                     } catch (IllegalArgumentException ex) {
@@ -136,6 +142,7 @@ public class CalcServer {
             }
         }
 
+        // 에러 핸들링(5가지 에러를 에러 code와 에러 message로 구분)
         private static String errorCodeOf(IllegalArgumentException ex) {
             return switch (ex.getMessage()) {
                 case "divided_by_zero" -> "0으로 나눌 수 없습니다.";

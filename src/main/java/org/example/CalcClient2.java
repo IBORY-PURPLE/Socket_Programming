@@ -3,6 +3,7 @@ import java.io.*;
 import java.net.*;
 import java.util.*;
 
+// 두번째 클라이언트
 public class CalcClient2 {
     public static void main(String[] args) {
         BufferedReader in = null;
